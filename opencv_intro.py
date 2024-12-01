@@ -1,110 +1,105 @@
 import cv2
 import numpy as np
 import argparse
-import csv
+import pandas as pd
 
-def process_frame(frame, apply_filters=True, crop=None):
-    if crop:
-        h, w = frame.shape[:2]
-        x0, y0, crop_w, crop_h = [int(c * 0.01 * dim) for c, dim in zip(crop, [w, h, w, h])]
-        frame = frame[y0:y0+crop_h, x0:x0+crop_w]
+# Load smoothed predictions
+predictions_df = pd.read_csv('smoothed_predictions.csv')  # Use smoothed predictions
+
+
+def process_frame(frame, frame_number, apply_filters=True, ball_color_transition=False, ball_trail=None):
+    """
+    Process a single frame of the video with optional filters, tracking, and ball trail visualization.
+    """
+    # Preserve the original frame size
+    output_frame = frame.copy()
 
     if apply_filters:
-        # Convert to grayscale
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # Apply Gaussian blur
-        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-        
-        # Apply Canny edge detection
-        edges = cv2.Canny(blurred, 50, 150)
-        
-        # Convert back to BGR for colored edge overlay
-        edges_color = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-        
-        # Combine original frame with colored edges
-        result = cv2.addWeighted(frame, 0.7, edges_color, 0.3, 0)
-        
-        return result
-    else:
-        return frame
+        # Convert the frame to grayscale
+        gray = cv2.cvtColor(output_frame, cv2.COLOR_BGR2GRAY)
+        output_frame = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+    if ball_color_transition or ball_trail:
+        # Add prediction overlay
+        prediction = predictions_df[predictions_df['frame'] == frame_number]
+
+        if not prediction.empty:
+            predicted_x = int(prediction['predicted_x'])
+            predicted_y = int(prediction['predicted_y'])
+        else:
+            # Assign default values if no prediction is found
+            predicted_x = output_frame.shape[1] // 2  # Center of the frame horizontally
+            predicted_y = output_frame.shape[0] // 2  # Center of the frame vertically
+
+        # Draw the ball at the predicted position
+        color = (0, 255, 0)  # Green for predicted position
+        cv2.circle(output_frame, (predicted_x, predicted_y), radius=10, color=color, thickness=-1)
+
+        # Update the ball trail
+        if ball_trail is not None:
+            ball_trail.append((predicted_x, predicted_y))
+            for i, point in enumerate(reversed(ball_trail[-30:])):  # Keep the last 30 points for the trail
+                fade_color = (255 - i * 8, 255 - i * 8, 255 - i * 8)  # Fading effect
+                cv2.circle(output_frame, point, radius=5, color=fade_color, thickness=-1)
+
+    return output_frame
+
 
 def main():
-    parser = argparse.ArgumentParser(description='Process video with optional CSV frame filtering')
+    parser = argparse.ArgumentParser(description='Process video with effects and tracking')
     parser.add_argument('input_video', type=str, help='Path to the input video file')
-    parser.add_argument('--csv', type=str, help='Path to CSV file for frame filtering')
-    parser.add_argument('--filters', action='store_true', help='Apply video effects')
-    parser.add_argument('--crop', type=int, nargs=4, metavar=('X0', 'Y0', 'W', 'H'),
-                        help='Crop video as percentage: x0 y0 width height')
+    parser.add_argument('--filters', action='store_true', help='Apply black-and-white filter to the video')
+    parser.add_argument('--track_ball', action='store_true', help='Track ball color and transition color on movement')
+    parser.add_argument('--trail', action='store_true', help='Add a trail to the ball movement')
     args = parser.parse_args()
 
     # Open the input video
     input_video = cv2.VideoCapture(args.input_video)
-    
     if not input_video.isOpened():
-        print("Error opening video file")
+        print(f"Error: Unable to open the video file {args.input_video}.")
         return
-    
+
     # Get video properties
     original_width = int(input_video.get(cv2.CAP_PROP_FRAME_WIDTH))
     original_height = int(input_video.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = int(input_video.get(cv2.CAP_PROP_FPS))
 
-    # Calculate dimensions after cropping (if crop is specified)
-    if args.crop:
-        x0, y0, crop_w, crop_h = [int(c * 0.01 * dim) for c, dim in zip(args.crop, [original_width, original_height, original_width, original_height])]
-        width, height = crop_w, crop_h
-    else:
-        width, height = original_width, original_height
-
-    # Create output video writer
+    # Define output video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    output_video = cv2.VideoWriter('output_video.mp4', fourcc, fps, (width, height))
-    
-    # Read CSV file if provided
-    frame_filter = {}
-    if args.csv:
-        with open(args.csv, 'r') as csvfile:
-            csv_reader = csv.DictReader(csvfile)
-            for row in csv_reader:
-                frame_filter[int(row['frame'])] = int(row['value'])
-        
-        # Find the first non-zero value frame
-        frame_number = next((frame for frame, value in frame_filter.items() if value != 0), 0)
-        
-        # Set the video capture to the first non-zero value frame
-        input_video.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-    else:
-        frame_number = 0
+    output_video = cv2.VideoWriter('output_video_with_smoothed_predictions.mp4', fourcc, fps, (original_width, original_height))
 
+    frame_number = 0
+    ball_trail = []  # Store ball trail points
     while True:
         ret, frame = input_video.read()
-        
         if not ret:
+            break  # Stop if the end of the video is reached
+
+        # Process the current frame
+        processed_frame = process_frame(
+            frame,
+            frame_number,
+            apply_filters=args.filters,
+            ball_color_transition=args.track_ball,
+            ball_trail=ball_trail if args.trail else None
+        )
+
+        # Write the processed frame to the output video
+        output_video.write(processed_frame)
+
+        # Display the processed frame (press 'q' to quit)
+        cv2.imshow('Processed Video with Smoothed Predictions', processed_frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            print("Exit keyword detected. Stopping processing.")
             break
-        
-        # Check if we should process this frame
-        if not frame_filter or frame_filter.get(frame_number, 0) == 1:
-            # Process the frame
-            processed_frame = process_frame(frame, args.filters, args.crop)
-            
-            # Write the processed frame to the output video
-            output_video.write(processed_frame)
-            
-            # Display the processed frame
-            cv2.imshow('Processed Video', processed_frame)
-            
-            # Press 'q' to quit
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-        
+
         frame_number += 1
-    
+
     # Release resources
     input_video.release()
     output_video.release()
     cv2.destroyAllWindows()
 
+
 if __name__ == "__main__":
     main()
-
