@@ -6,6 +6,9 @@ import pandas as pd
 # Load smoothed predictions
 predictions_df = pd.read_csv('smoothed_predictions.csv')  # Use smoothed predictions
 
+# Define active frames (frames where the ball is being hit or in motion)
+active_frames = predictions_df[predictions_df['value'] == 1]['frame'].tolist()  # Assuming 'value' column indicates activity
+
 
 def process_frame(frame, frame_number, apply_filters=True, ball_color_transition=False, ball_trail=None):
     """
@@ -24,10 +27,15 @@ def process_frame(frame, frame_number, apply_filters=True, ball_color_transition
         prediction = predictions_df[predictions_df['frame'] == frame_number]
 
         if not prediction.empty:
-            predicted_x = int(prediction['predicted_x'])
-            predicted_y = int(prediction['predicted_y'])
+            # Ensure column names match the DataFrame
+            try:
+                predicted_x = int(prediction['predicted_x'])
+                predicted_y = int(prediction['predicted_y'])
+            except KeyError:
+                print(f"Error: Missing columns 'predicted_x' or 'predicted_y' in predictions DataFrame.")
+                return output_frame
         else:
-            # Assign default values if no prediction is found
+            print(f"Warning: No prediction for frame {frame_number}. Defaulting to center.")
             predicted_x = output_frame.shape[1] // 2  # Center of the frame horizontally
             predicted_y = output_frame.shape[0] // 2  # Center of the frame vertically
 
@@ -43,6 +51,7 @@ def process_frame(frame, frame_number, apply_filters=True, ball_color_transition
                 cv2.circle(output_frame, point, radius=5, color=fade_color, thickness=-1)
 
     return output_frame
+
 
 
 def main():
@@ -66,7 +75,7 @@ def main():
 
     # Define output video writer
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    output_video = cv2.VideoWriter('output_video_with_smoothed_predictions.mp4', fourcc, fps, (original_width, original_height))
+    output_video = cv2.VideoWriter('output_video_with_active_frames.mp4', fourcc, fps, (original_width, original_height))
 
     frame_number = 0
     ball_trail = []  # Store ball trail points
@@ -74,6 +83,11 @@ def main():
         ret, frame = input_video.read()
         if not ret:
             break  # Stop if the end of the video is reached
+
+        # Skip frames not in active_frames
+        if frame_number not in active_frames:
+            frame_number += 1
+            continue
 
         # Process the current frame
         processed_frame = process_frame(
@@ -88,7 +102,7 @@ def main():
         output_video.write(processed_frame)
 
         # Display the processed frame (press 'q' to quit)
-        cv2.imshow('Processed Video with Smoothed Predictions', processed_frame)
+        cv2.imshow('Processed Video with Active Frames', processed_frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             print("Exit keyword detected. Stopping processing.")
             break
